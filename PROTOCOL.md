@@ -11,11 +11,11 @@ The ESP8266 streams 7-DOF sensor data (MPU6500 + BMP280) over UDP as fixed-size 
 
 ## Network Defaults
 
-| Parameter    | Value           |
-|-------------|-----------------|
-| ESP8266 IP  | 192.168.1.200   |
-| Target IP   | 192.168.1.100   |
-| Target Port | 4210            |
+| Parameter    | Value              |
+|-------------|--------------------|
+| ESP8266 IP  | Set in sketch      |
+| Target IP   | Set in sketch      |
+| Target Port | 4210 (default)     |
 
 ## Packet Layout
 

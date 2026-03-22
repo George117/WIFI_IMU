@@ -5,9 +5,11 @@ and temperature using PyQtGraph.  See ../PROTOCOL.md for packet details.
 """
 
 import argparse
+import json
 import socket
 import struct
 import sys
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
@@ -17,6 +19,47 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 PACKET_FORMAT = "<2s I I 3f 3f f f B"
 PACKET_SIZE = 43
 SYNC_WORD = b"\xaa\x55"
+
+DEFAULT_CONFIG = {
+    "ip": "0.0.0.0",
+    "port": 4210,
+    "axes": {
+        "accel_x": "Accel X",
+        "accel_y": "Accel Y",
+        "accel_z": "Accel Z",
+        "gyro_x": "Gyro X",
+        "gyro_y": "Gyro Y",
+        "gyro_z": "Gyro Z",
+    },
+}
+CONFIG_PATH = Path(__file__).parent / "config.json"
+
+AXIS_KEYS = ("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z")
+ALL_PLOT_KEYS = AXIS_KEYS + ("pressure", "temperature")
+
+
+def load_config() -> dict:
+    config = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    config["visible"] = {k: True for k in ALL_PLOT_KEYS}
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                user = json.load(f)
+            if "ip" in user:
+                config["ip"] = str(user["ip"])
+            if "port" in user:
+                config["port"] = int(user["port"])
+            if "axes" in user and isinstance(user["axes"], dict):
+                for key in AXIS_KEYS:
+                    if key in user["axes"]:
+                        config["axes"][key] = str(user["axes"][key])
+            if "visible" in user and isinstance(user["visible"], dict):
+                for key in ALL_PLOT_KEYS:
+                    if key in user["visible"]:
+                        config["visible"][key] = bool(user["visible"][key])
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            print(f"Warning: could not load {CONFIG_PATH}: {e}")
+    return config
 
 
 def parse_packet(data: bytes) -> dict | None:
@@ -111,21 +154,33 @@ COL_PRESS = 7
 COL_TEMP = 8
 NUM_CHANNELS = 9
 
-# Plot definitions: (title, unit, column_index, color, y_range or None)
-PLOT_DEFS = [
-    ("Accel X", "g",     COL_AX, "#e74c3c", (-4, 4)),
-    ("Accel Y", "g",     COL_AY, "#2ecc71", (-4, 4)),
-    ("Accel Z", "g",     COL_AZ, "#3498db", (-4, 4)),
-    ("Gyro X",  "deg/s", COL_GX, "#e74c3c", (-500, 500)),
-    ("Gyro Y",  "deg/s", COL_GY, "#2ecc71", (-500, 500)),
-    ("Gyro Z",  "deg/s", COL_GZ, "#3498db", (-500, 500)),
-    ("Pressure",    "Pa", COL_PRESS, "#f1c40f", None),
-    ("Temperature", "°C", COL_TEMP,  "#1abc9c", None),
-]
+# Plot key → (default_title, unit, column_index, color, y_range)
+_ALL_PLOT_INFO = {
+    "accel_x":     ("Accel X",     "g",     COL_AX,    "#e74c3c", (-4, 4)),
+    "accel_y":     ("Accel Y",     "g",     COL_AY,    "#2ecc71", (-4, 4)),
+    "accel_z":     ("Accel Z",     "g",     COL_AZ,    "#3498db", (-4, 4)),
+    "gyro_x":      ("Gyro X",      "deg/s", COL_GX,    "#e74c3c", (-500, 500)),
+    "gyro_y":      ("Gyro Y",      "deg/s", COL_GY,    "#2ecc71", (-500, 500)),
+    "gyro_z":      ("Gyro Z",      "deg/s", COL_GZ,    "#3498db", (-500, 500)),
+    "pressure":    ("Pressure",    "Pa",    COL_PRESS, "#f1c40f", None),
+    "temperature": ("Temperature", "°C",    COL_TEMP,  "#1abc9c", None),
+}
+
+
+def build_plot_defs(axes: dict, visible: dict) -> list:
+    """Build plot definitions list, filtered by visibility."""
+    defs = []
+    for key in ALL_PLOT_KEYS:
+        if not visible.get(key, True):
+            continue
+        default_title, unit, col, color, yrange = _ALL_PLOT_INFO[key]
+        title = axes.get(key, default_title)
+        defs.append((title, unit, col, color, yrange))
+    return defs
 
 
 class IMUViewer(QtWidgets.QMainWindow):
-    def __init__(self, default_ip: str, default_port: int):
+    def __init__(self, default_ip: str, default_port: int, plot_defs: list):
         super().__init__()
         self.setWindowTitle("WiFi IMU Viewer")
         self.resize(1000, 900)
@@ -181,13 +236,13 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._graphics = pg.GraphicsLayoutWidget()
         scroll.setWidget(self._graphics)
         # Tall enough so each plot gets decent height when scrolling
-        self._graphics.setMinimumHeight(len(PLOT_DEFS) * 160)
+        self._graphics.setMinimumHeight(len(plot_defs) * 160)
 
         self._plots: list[pg.PlotItem] = []
         self._curves: list[pg.PlotDataItem] = []
         self._col_indices: list[int] = []
 
-        for row, (title, unit, col_idx, color, yrange) in enumerate(PLOT_DEFS):
+        for row, (title, unit, col_idx, color, yrange) in enumerate(plot_defs):
             p = self._graphics.addPlot(row=row, col=0)
             p.setLabel("left", unit)
             p.setTitle(title, size="9pt")
@@ -319,10 +374,15 @@ class IMUViewer(QtWidgets.QMainWindow):
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 def main():
+    config = load_config()
+
     parser = argparse.ArgumentParser(description="WiFi IMU Viewer")
-    parser.add_argument("--ip", default="0.0.0.0", help="Bind IP address")
-    parser.add_argument("--port", type=int, default=4210, help="UDP listen port")
+    parser.add_argument("--ip", default=None, help="Bind IP address")
+    parser.add_argument("--port", type=int, default=None, help="UDP listen port")
     args = parser.parse_args()
+
+    ip = args.ip if args.ip is not None else config["ip"]
+    port = args.port if args.port is not None else config["port"]
 
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -335,7 +395,8 @@ def main():
     pg.setConfigOption("background", "#1e1e1e")
     pg.setConfigOption("foreground", "#cccccc")
 
-    window = IMUViewer(args.ip, args.port)
+    plot_defs = build_plot_defs(config["axes"], config["visible"])
+    window = IMUViewer(ip, port, plot_defs)
     window.show()
     sys.exit(app.exec())
 

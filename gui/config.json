@@ -1,0 +1,22 @@
+{
+  "ip": "192.168.68.139",
+  "port": 4210,
+  "axes": {
+    "accel_x": "X",
+    "accel_y": "Y",
+    "accel_z": "Z",
+    "gyro_x": "Roll",
+    "gyro_y": "Pitch",
+    "gyro_z": "Yaw"
+  },
+  "visible": {
+    "accel_x": true,
+    "accel_y": true,
+    "accel_z": true,
+    "gyro_x": true,
+    "gyro_y": true,
+    "gyro_z": true,
+    "pressure": false,
+    "temperature": false
+  }
+}

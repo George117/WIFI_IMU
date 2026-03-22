@@ -40,7 +40,9 @@ ALL_PLOT_KEYS = AXIS_KEYS + ("pressure", "temperature")
 
 def load_config() -> dict:
     config = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    config.setdefault("time_window", 10.0)
     config["visible"] = {k: True for k in ALL_PLOT_KEYS}
+    config["colors"] = {}
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
@@ -49,6 +51,8 @@ def load_config() -> dict:
                 config["ip"] = str(user["ip"])
             if "port" in user:
                 config["port"] = int(user["port"])
+            if "time_window" in user:
+                config["time_window"] = float(user["time_window"])
             if "axes" in user and isinstance(user["axes"], dict):
                 for key in AXIS_KEYS:
                     if key in user["axes"]:
@@ -57,6 +61,10 @@ def load_config() -> dict:
                 for key in ALL_PLOT_KEYS:
                     if key in user["visible"]:
                         config["visible"][key] = bool(user["visible"][key])
+            if "colors" in user and isinstance(user["colors"], dict):
+                for key in ALL_PLOT_KEYS:
+                    if key in user["colors"]:
+                        config["colors"][key] = str(user["colors"][key])
         except (json.JSONDecodeError, ValueError, OSError) as e:
             print(f"Warning: could not load {CONFIG_PATH}: {e}")
     return config
@@ -142,9 +150,8 @@ class ReceiverThread(QtCore.QThread):
 
 
 # ── Main window ──────────────────────────────────────────────────────────────
-BUFFER_SECONDS = 10
-BUFFER_CAPACITY = BUFFER_SECONDS * 100  # 10 s at 100 Hz
 PLOT_FPS = 30
+SAMPLE_RATE = 100  # Hz
 
 # Column indices in the ring buffer
 COL_TIME = 0
@@ -167,25 +174,29 @@ _ALL_PLOT_INFO = {
 }
 
 
-def build_plot_defs(axes: dict, visible: dict) -> list:
+def build_plot_defs(axes: dict, visible: dict, colors: dict) -> list:
     """Build plot definitions list, filtered by visibility."""
     defs = []
     for key in ALL_PLOT_KEYS:
         if not visible.get(key, True):
             continue
-        default_title, unit, col, color, yrange = _ALL_PLOT_INFO[key]
+        default_title, unit, col, default_color, yrange = _ALL_PLOT_INFO[key]
         title = axes.get(key, default_title)
+        color = colors.get(key, default_color)
         defs.append((title, unit, col, color, yrange))
     return defs
 
 
 class IMUViewer(QtWidgets.QMainWindow):
-    def __init__(self, default_ip: str, default_port: int, plot_defs: list):
+    def __init__(self, default_ip: str, default_port: int, plot_defs: list,
+                 time_window: float = 10.0):
         super().__init__()
         self.setWindowTitle("WiFi IMU Viewer")
         self.resize(1000, 900)
 
-        self._buf = RingBuffer(BUFFER_CAPACITY, NUM_CHANNELS)
+        self._time_window = time_window
+        buf_capacity = int(self._time_window * SAMPLE_RATE)
+        self._buf = RingBuffer(buf_capacity, NUM_CHANNELS)
         self._t0: float | None = None
         self._last_id: int | None = None
         self._total_rx = 0
@@ -233,18 +244,22 @@ class IMUViewer(QtWidgets.QMainWindow):
         scroll.setWidgetResizable(True)
         root.addWidget(scroll)
 
+        num_cols = 3
+        num_rows = (len(plot_defs) + num_cols - 1) // num_cols
+
         self._graphics = pg.GraphicsLayoutWidget()
         scroll.setWidget(self._graphics)
-        # Tall enough so each plot gets decent height when scrolling
-        self._graphics.setMinimumHeight(len(plot_defs) * 160)
+        self._graphics.setMinimumHeight(num_rows * 200)
 
         self._plots: list[pg.PlotItem] = []
         self._curves: list[pg.PlotDataItem] = []
         self._col_indices: list[int] = []
 
-        for row, (title, unit, col_idx, color, yrange) in enumerate(plot_defs):
-            p = self._graphics.addPlot(row=row, col=0)
+        for i, (title, unit, col_idx, color, yrange) in enumerate(plot_defs):
+            r, c = divmod(i, num_cols)
+            p = self._graphics.addPlot(row=r, col=c)
             p.setLabel("left", unit)
+            p.setLabel("bottom", "s")
             p.setTitle(title, size="9pt")
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setClipToView(True)
@@ -283,7 +298,7 @@ class IMUViewer(QtWidgets.QMainWindow):
             return
 
         # Reset state
-        self._buf = RingBuffer(BUFFER_CAPACITY, NUM_CHANNELS)
+        self._buf = RingBuffer(int(self._time_window * SAMPLE_RATE), NUM_CHANNELS)
         self._t0 = None
         self._last_id = None
         self._total_rx = 0
@@ -359,7 +374,7 @@ class IMUViewer(QtWidgets.QMainWindow):
             curve.setData(t, d[:, col_idx])
 
         t_max = t[-1]
-        self._plots[0].setXRange(t_max - BUFFER_SECONDS, t_max, padding=0)
+        self._plots[0].setXRange(t_max - self._time_window, t_max, padding=0)
 
         self._status.setText(
             f"Rate: {self._rate_value:.0f} Hz  |  "
@@ -395,8 +410,8 @@ def main():
     pg.setConfigOption("background", "#1e1e1e")
     pg.setConfigOption("foreground", "#cccccc")
 
-    plot_defs = build_plot_defs(config["axes"], config["visible"])
-    window = IMUViewer(ip, port, plot_defs)
+    plot_defs = build_plot_defs(config["axes"], config["visible"], config["colors"])
+    window = IMUViewer(ip, port, plot_defs, config["time_window"])
     window.show()
     sys.exit(app.exec())
 

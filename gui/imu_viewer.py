@@ -5,15 +5,17 @@ and temperature using PyQtGraph.  See ../PROTOCOL.md for packet details.
 """
 
 import argparse
+import csv
 import json
 import socket
 import struct
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 # ── Protocol constants ───────────────────────────────────────────────────────
 PACKET_FORMAT = "<2s I I 3f 3f f f B"
@@ -36,6 +38,13 @@ CONFIG_PATH = Path(__file__).parent / "config.json"
 
 AXIS_KEYS = ("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z")
 ALL_PLOT_KEYS = AXIS_KEYS + ("pressure", "temperature")
+
+CSV_HEADER = [
+    "timestamp_ms", "packet_id",
+    "accel_x", "accel_y", "accel_z",
+    "gyro_x", "gyro_y", "gyro_z",
+    "pressure", "temperature",
+]
 
 
 def load_config() -> dict:
@@ -183,7 +192,7 @@ def build_plot_defs(axes: dict, visible: dict, colors: dict) -> list:
         default_title, unit, col, default_color, yrange = _ALL_PLOT_INFO[key]
         title = axes.get(key, default_title)
         color = colors.get(key, default_color)
-        defs.append((title, unit, col, color, yrange))
+        defs.append((key, title, unit, col, color, yrange))
     return defs
 
 
@@ -204,6 +213,11 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._rate_counter = 0
         self._rate_value = 0.0
         self._receiver: ReceiverThread | None = None
+        self._paused = False
+        self._fft_mode = False
+        self._csv_file = None
+        self._csv_writer = None
+        self._plot_defs = plot_defs
 
         # ── UI ────────────────────────────────────────────────────────────
         central = QtWidgets.QWidget()
@@ -228,6 +242,27 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._start_btn.setFixedWidth(80)
         self._start_btn.clicked.connect(self._toggle_receiver)
         form.addWidget(self._start_btn)
+
+        # ── Pause button ─────────────────────────────────────────────────
+        self._pause_btn = QtWidgets.QPushButton("Pause")
+        self._pause_btn.setFixedWidth(80)
+        self._pause_btn.setEnabled(False)
+        self._pause_btn.clicked.connect(self._toggle_pause)
+        form.addWidget(self._pause_btn)
+
+        # ── Record button ────────────────────────────────────────────────
+        self._rec_btn = QtWidgets.QPushButton("Record")
+        self._rec_btn.setFixedWidth(80)
+        self._rec_btn.setEnabled(False)
+        self._rec_btn.clicked.connect(self._toggle_recording)
+        form.addWidget(self._rec_btn)
+
+        # ── FFT toggle button ────────────────────────────────────────────
+        self._fft_btn = QtWidgets.QPushButton("FFT")
+        self._fft_btn.setFixedWidth(80)
+        self._fft_btn.setCheckable(True)
+        self._fft_btn.clicked.connect(self._toggle_fft)
+        form.addWidget(self._fft_btn)
 
         form.addStretch()
 
@@ -254,8 +289,9 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._plots: list[pg.PlotItem] = []
         self._curves: list[pg.PlotDataItem] = []
         self._col_indices: list[int] = []
+        self._stat_labels: list[pg.TextItem] = []
 
-        for i, (title, unit, col_idx, color, yrange) in enumerate(plot_defs):
+        for i, (_key, title, unit, col_idx, color, yrange) in enumerate(plot_defs):
             r, c = divmod(i, num_cols)
             p = self._graphics.addPlot(row=r, col=c)
             p.setLabel("left", unit)
@@ -271,9 +307,41 @@ class IMUViewer(QtWidgets.QMainWindow):
             self._curves.append(curve)
             self._col_indices.append(col_idx)
 
-        # Link all x-axes to the first plot
+            # Statistics text overlay (top-left of each plot)
+            stat = pg.TextItem("", anchor=(0, 0), color="#aaaaaa")
+            stat.setFont(QtGui.QFont("Monospace", 8))
+            stat.setParentItem(p.vb)
+            self._stat_labels.append(stat)
+
+        # Link all time-domain x-axes to the first plot
         for p in self._plots[1:]:
             p.setXLink(self._plots[0])
+
+        # ── FFT plots (same grid, below time-domain) ─────────────────────
+        fft_row_offset = num_rows
+        self._fft_plots: list[pg.PlotItem] = []
+        self._fft_curves: list[pg.PlotDataItem] = []
+
+        for i, (_key, title, unit, col_idx, color, yrange) in enumerate(plot_defs):
+            r, c = divmod(i, num_cols)
+            p = self._graphics.addPlot(row=fft_row_offset + r, col=c)
+            p.setLabel("left", unit)
+            p.setLabel("bottom", "Hz")
+            p.setTitle(f"{title} — FFT", size="9pt")
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setClipToView(True)
+            p.setXRange(0, SAMPLE_RATE / 2, padding=0)
+            curve = p.plot(pen=pg.mkPen(color, width=1))
+            p.setVisible(False)
+            self._fft_plots.append(p)
+            self._fft_curves.append(curve)
+
+        # Link all FFT x-axes
+        for p in self._fft_plots[1:]:
+            p.setXLink(self._fft_plots[0])
+
+        fft_total_rows = (len(plot_defs) + num_cols - 1) // num_cols
+        self._fft_row_count = fft_total_rows
 
         # ── Timers ────────────────────────────────────────────────────────
         self._plot_timer = QtCore.QTimer()
@@ -281,6 +349,47 @@ class IMUViewer(QtWidgets.QMainWindow):
 
         self._rate_timer = QtCore.QTimer()
         self._rate_timer.timeout.connect(self._update_rate)
+
+    # ── FFT control ──────────────────────────────────────────────────────
+    def _toggle_fft(self):
+        self._fft_mode = self._fft_btn.isChecked()
+        for p in self._fft_plots:
+            p.setVisible(self._fft_mode)
+        # Resize graphics widget to fit
+        num_cols = 3
+        time_rows = (len(self._plot_defs) + num_cols - 1) // num_cols
+        total_rows = time_rows + (self._fft_row_count if self._fft_mode else 0)
+        self._graphics.setMinimumHeight(total_rows * 200)
+
+    # ── Pause control ────────────────────────────────────────────────────
+    def _toggle_pause(self):
+        self._paused = not self._paused
+        self._pause_btn.setText("Resume" if self._paused else "Pause")
+
+    # ── CSV recording ────────────────────────────────────────────────────
+    def _toggle_recording(self):
+        if self._csv_file is not None:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = Path(__file__).parent / f"recording_{ts}.csv"
+        self._csv_file = open(path, "w", newline="")
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow(CSV_HEADER)
+        self._rec_btn.setText("Stop Rec")
+        self._rec_btn.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self._status.setText(f"Recording → {path.name}")
+
+    def _stop_recording(self):
+        if self._csv_file is not None:
+            self._csv_file.close()
+            self._csv_file = None
+            self._csv_writer = None
+        self._rec_btn.setText("Record")
+        self._rec_btn.setStyleSheet("")
 
     # ── Connection control ────────────────────────────────────────────────
     def _toggle_receiver(self):
@@ -305,6 +414,8 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._drops = 0
         self._rate_counter = 0
         self._rate_value = 0.0
+        self._paused = False
+        self._pause_btn.setText("Pause")
 
         self._receiver = ReceiverThread(bind_ip, port)
         self._receiver.packet_received.connect(self._on_packet)
@@ -316,6 +427,8 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._ip_edit.setEnabled(False)
         self._port_edit.setEnabled(False)
         self._start_btn.setText("Stop")
+        self._pause_btn.setEnabled(True)
+        self._rec_btn.setEnabled(True)
         self._status.setText("Waiting for data…")
 
     def _stop_receiver(self):
@@ -323,12 +436,15 @@ class IMUViewer(QtWidgets.QMainWindow):
             self._receiver.stop()
             self._receiver = None
 
+        self._stop_recording()
         self._plot_timer.stop()
         self._rate_timer.stop()
 
         self._ip_edit.setEnabled(True)
         self._port_edit.setEnabled(True)
         self._start_btn.setText("Start")
+        self._pause_btn.setEnabled(False)
+        self._rec_btn.setEnabled(False)
         self._status.setText("Stopped")
 
     # ── Slots ─────────────────────────────────────────────────────────────
@@ -352,6 +468,14 @@ class IMUViewer(QtWidgets.QMainWindow):
         ])
         self._buf.append(row)
 
+        # CSV recording
+        if self._csv_writer is not None:
+            self._csv_writer.writerow([
+                pkt["timestamp_ms"], pkt["packet_id"],
+                *pkt["accel"], *pkt["gyro"],
+                pkt["pressure"], pkt["temperature"],
+            ])
+
         pid = pkt["packet_id"]
         if self._last_id is not None and pid > self._last_id + 1:
             self._drops += pid - self._last_id - 1
@@ -364,22 +488,54 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._rate_counter = 0
 
     def _update_plots(self):
+        if self._paused:
+            return
+
         d = self._buf.get()
         if len(d) == 0:
             return
 
         t = d[:, COL_TIME]
 
-        for curve, col_idx in zip(self._curves, self._col_indices):
-            curve.setData(t, d[:, col_idx])
+        for i, (curve, col_idx) in enumerate(zip(self._curves, self._col_indices)):
+            y = d[:, col_idx]
+            curve.setData(t, y)
+
+            # Update statistics overlay
+            if len(y) > 0:
+                vmin = np.min(y)
+                vmax = np.max(y)
+                vmean = np.mean(y)
+                vrms = np.sqrt(np.mean(y ** 2))
+                self._stat_labels[i].setText(
+                    f"Min:{vmin:8.2f}  Max:{vmax:8.2f}\n"
+                    f"Avg:{vmean:8.2f}  RMS:{vrms:8.2f}"
+                )
+                # Position at top-left of visible area
+                vb = self._plots[i].vb
+                rect = vb.viewRect()
+                self._stat_labels[i].setPos(rect.left(), rect.top())
+
+        # ── FFT update ────────────────────────────────────────────────
+        if self._fft_mode and len(d) >= 4:
+            n = len(d)
+            freqs = np.fft.rfftfreq(n, d=1.0 / SAMPLE_RATE)
+            for i, col_idx in enumerate(self._col_indices):
+                y = d[:, col_idx]
+                y_detrend = y - np.mean(y)
+                fft_mag = np.abs(np.fft.rfft(y_detrend)) * 2.0 / n
+                self._fft_curves[i].setData(freqs, fft_mag)
 
         t_max = t[-1]
         self._plots[0].setXRange(t_max - self._time_window, t_max, padding=0)
 
+        rec_str = " | REC" if self._csv_file is not None else ""
+        pause_str = " | PAUSED" if self._paused else ""
         self._status.setText(
             f"Rate: {self._rate_value:.0f} Hz  |  "
             f"Received: {self._total_rx}  |  "
             f"Dropped: {self._drops}"
+            f"{rec_str}{pause_str}"
         )
 
     def closeEvent(self, event):

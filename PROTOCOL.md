@@ -5,7 +5,7 @@
 The ESP8266 streams 7-DOF sensor data (MPU6500 + BMP280) over UDP as fixed-size binary packets at 100 Hz (every 10 ms).
 
 - **Transport:** UDP
-- **Default port:** 4210
+- **Default port:** 4269
 - **Byte order:** Little-endian (native ESP8266 / x86)
 - **Packet size:** 43 bytes (fixed)
 
@@ -15,7 +15,7 @@ The ESP8266 streams 7-DOF sensor data (MPU6500 + BMP280) over UDP as fixed-size 
 |-------------|--------------------|
 | ESP8266 IP  | Set in sketch      |
 | Target IP   | Set in sketch      |
-| Target Port | 4210 (default)     |
+| Target Port | 4269 (default)     |
 
 ## Packet Layout
 

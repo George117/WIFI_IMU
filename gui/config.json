@@ -1,6 +1,6 @@
 {
   "ip": "192.168.68.139",
-  "port": 4210,
+  "port": 4269,
   "time_window": 10,
   "axes": {
     "accel_x": "X",
@@ -24,10 +24,10 @@
     "accel_x": "#e74c3c",
     "accel_y": "#2ecc71",
     "accel_z": "#3498db",
-    "gyro_x": "#e74c3c",
-    "gyro_y": "#2ecc71",
-    "gyro_z": "#3498db",
+    "gyro_x": "#e67e22",
+    "gyro_y": "#9b59b6",
+    "gyro_z": "#1abc9c",
     "pressure": "#f1c40f",
-    "temperature": "#1abc9c"
+    "temperature": "#e84393"
   }
 }

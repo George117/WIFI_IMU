@@ -10,18 +10,18 @@
 #include <Wire.h>
 #include <MPU6500_WE.h>
 
-// ── WiFi credentials ────────────────────────────────────────────────────────
-const char* WIFI_SSID     = "Reach";
-const char* WIFI_PASSWORD = "RememberReach";
+// ── Network selector pin ────────────────────────────────────────────────────
+#define NET_SEL_PIN D7  // HIGH (3.3V) = ScorpionIPX, LOW (GND) = Reach
 
-// ── Network configuration ───────────────────────────────────────────────────
-IPAddress staticIP(192, 168, 68, 132);   // ESP8266 fixed IP
-IPAddress gateway(192, 168, 68, 1);
+// ── WiFi credentials & network config (selected at boot via D5) ─────────────
+const char* WIFI_SSID;
+const char* WIFI_PASSWORD;
+IPAddress staticIP;
+IPAddress gateway;
 IPAddress subnet(255, 255, 255, 0);
 IPAddress dns(8, 8, 8, 8);
-
-IPAddress targetIP(192, 168, 68, 139);   // Python application IP
-const uint16_t TARGET_PORT = 4210;
+IPAddress targetIP;
+const uint16_t TARGET_PORT = 4269;
 
 // ── I2C / sensor addresses ──────────────────────────────────────────────────
 #define SDA_PIN D2
@@ -201,6 +201,26 @@ void setup() {
   }
   bmp280Init();
   Serial.println("[BMP280] OK");
+
+  // ── Network selection via D7 ──
+  pinMode(NET_SEL_PIN, INPUT_PULLUP);
+  delay(10);  // let pin settle
+
+  if (digitalRead(NET_SEL_PIN) == HIGH) {
+    WIFI_SSID     = "Reach";
+    WIFI_PASSWORD = "RememberReach";
+    staticIP  = IPAddress(192, 168, 68, 132);
+    gateway   = IPAddress(192, 168, 68, 1);
+    targetIP  = IPAddress(192, 168, 68, 139);
+  } else {
+    WIFI_SSID     = "ScorpionIPX";
+    WIFI_PASSWORD = "Qwerty123";
+    staticIP  = IPAddress(192, 168, 0, 132);
+    gateway   = IPAddress(192, 168, 0, 1);
+    targetIP  = IPAddress(192, 168, 0, 69);
+  }
+  Serial.printf("[NET] D7=%s → SSID: %s\n",
+                digitalRead(NET_SEL_PIN) ? "HIGH" : "LOW", WIFI_SSID);
 
   // ── WiFi ──
   WiFi.mode(WIFI_STA);

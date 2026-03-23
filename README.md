@@ -63,7 +63,7 @@ IPAddress subnet(255, 255, 255, 0);
 IPAddress dns(8, 8, 8, 8);
 
 IPAddress targetIP(<PC_IP>);             // PC running the GUI
-const uint16_t TARGET_PORT = 4210;
+const uint16_t TARGET_PORT = 4269;
 ```
 
 ### Sensor Configuration
@@ -95,7 +95,7 @@ On successful boot:
 [BMP280] OK
 [WiFi] Connecting...
 [WiFi] Connected – IP: <ESP8266_IP>
-[UDP] Sending to <PC_IP>:4210 every 10000 us
+[UDP] Sending to <PC_IP>:4269 every 10000 us
 ```
 
 ## UDP Packet Format
@@ -134,7 +134,7 @@ python imu_viewer.py
 Or with CLI overrides:
 
 ```bash
-python imu_viewer.py --ip 0.0.0.0 --port 4210
+python imu_viewer.py --ip 0.0.0.0 --port 4269
 ```
 
 ### Configuration
@@ -144,7 +144,7 @@ All GUI settings are stored in `gui/config.json`. The application reads this fil
 ```json
 {
   "ip": "<BIND_IP>",
-  "port": 4210,
+  "port": 4269,
   "time_window": 10,
   "axes": {
     "accel_x": "X",
@@ -182,7 +182,7 @@ All GUI settings are stored in `gui/config.json`. The application reads this fil
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `ip` | string | `"0.0.0.0"` | UDP bind IP address |
-| `port` | int | `4210` | UDP listen port |
+| `port` | int | `4269` | UDP listen port |
 | `time_window` | float | `10` | Visible time window in seconds. Use a small value (e.g. 2) for fast signals, larger (e.g. 60) for trends |
 | `axes` | object | — | Custom display names for each axis. Maps IMU axes to physical DOFs (e.g. `"gyro_x": "Roll"`) |
 | `visible` | object | all `true` | Show/hide individual plots. Set to `false` to hide a plot and give more space to the remaining ones |

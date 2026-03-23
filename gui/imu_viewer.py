@@ -22,7 +22,7 @@ SYNC_WORD = b"\xaa\x55"
 
 DEFAULT_CONFIG = {
     "ip": "0.0.0.0",
-    "port": 4210,
+    "port": 4269,
     "axes": {
         "accel_x": "Accel X",
         "accel_y": "Accel Y",

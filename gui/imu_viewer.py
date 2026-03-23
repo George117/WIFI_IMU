@@ -22,9 +22,12 @@ PACKET_FORMAT = "<2s I I 3f 3f f f B"
 PACKET_SIZE = 43
 SYNC_WORD = b"\xaa\x55"
 
+CALIBRATE_CMD = b"\xca\xfe"
+
 DEFAULT_CONFIG = {
     "ip": "0.0.0.0",
     "port": 4269,
+    "esp_ip": "",
     "axes": {
         "accel_x": "Accel X",
         "accel_y": "Accel Y",
@@ -60,6 +63,8 @@ def load_config() -> dict:
                 config["ip"] = str(user["ip"])
             if "port" in user:
                 config["port"] = int(user["port"])
+            if "esp_ip" in user:
+                config["esp_ip"] = str(user["esp_ip"])
             if "time_window" in user:
                 config["time_window"] = float(user["time_window"])
             if "axes" in user and isinstance(user["axes"], dict):
@@ -197,8 +202,8 @@ def build_plot_defs(axes: dict, visible: dict, colors: dict) -> list:
 
 
 class IMUViewer(QtWidgets.QMainWindow):
-    def __init__(self, default_ip: str, default_port: int, plot_defs: list,
-                 time_window: float = 10.0):
+    def __init__(self, default_ip: str, default_port: int, esp_ip: str,
+                 plot_defs: list, time_window: float = 10.0):
         super().__init__()
         self.setWindowTitle("WiFi IMU Viewer")
         self.resize(1000, 900)
@@ -213,6 +218,7 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._rate_counter = 0
         self._rate_value = 0.0
         self._receiver: ReceiverThread | None = None
+        self._esp_ip = esp_ip
         self._paused = False
         self._fft_mode = False
         self._csv_file = None
@@ -263,6 +269,13 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._fft_btn.setCheckable(True)
         self._fft_btn.clicked.connect(self._toggle_fft)
         form.addWidget(self._fft_btn)
+
+        # ── Calibrate button ─────────────────────────────────────────────
+        self._cal_btn = QtWidgets.QPushButton("Calibrate")
+        self._cal_btn.setFixedWidth(80)
+        self._cal_btn.setEnabled(False)
+        self._cal_btn.clicked.connect(self._send_calibrate)
+        form.addWidget(self._cal_btn)
 
         form.addStretch()
 
@@ -361,6 +374,30 @@ class IMUViewer(QtWidgets.QMainWindow):
         total_rows = time_rows + (self._fft_row_count if self._fft_mode else 0)
         self._graphics.setMinimumHeight(total_rows * 200)
 
+    # ── Calibration ────────────────────────────────────────────────────
+    def _send_calibrate(self):
+        if not self._esp_ip:
+            self._status.setText("esp_ip not set in config.json")
+            return
+        try:
+            port = int(self._port_edit.text().strip())
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.sendto(CALIBRATE_CMD, (self._esp_ip, port))
+            sock.close()
+            self._cal_btn.setText("Calibrating...")
+            self._cal_btn.setStyleSheet("color: #f1c40f; font-weight: bold;")
+            self._cal_btn.setEnabled(False)
+            self._status.setText("Calibrating — keep sensor still...")
+            QtCore.QTimer.singleShot(3000, self._cal_done)
+        except OSError as e:
+            self._status.setText(f"Calibration send failed: {e}")
+
+    def _cal_done(self):
+        self._cal_btn.setText("Calibrate")
+        self._cal_btn.setStyleSheet("")
+        self._cal_btn.setEnabled(True)
+        self._status.setText("Calibration complete")
+
     # ── Pause control ────────────────────────────────────────────────────
     def _toggle_pause(self):
         self._paused = not self._paused
@@ -429,6 +466,7 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._start_btn.setText("Stop")
         self._pause_btn.setEnabled(True)
         self._rec_btn.setEnabled(True)
+        self._cal_btn.setEnabled(bool(self._esp_ip))
         self._status.setText("Waiting for data…")
 
     def _stop_receiver(self):
@@ -445,6 +483,7 @@ class IMUViewer(QtWidgets.QMainWindow):
         self._start_btn.setText("Start")
         self._pause_btn.setEnabled(False)
         self._rec_btn.setEnabled(False)
+        self._cal_btn.setEnabled(False)
         self._status.setText("Stopped")
 
     # ── Slots ─────────────────────────────────────────────────────────────
@@ -567,7 +606,7 @@ def main():
     pg.setConfigOption("foreground", "#cccccc")
 
     plot_defs = build_plot_defs(config["axes"], config["visible"], config["colors"])
-    window = IMUViewer(ip, port, plot_defs, config["time_window"])
+    window = IMUViewer(ip, port, config["esp_ip"], plot_defs, config["time_window"])
     window.show()
     sys.exit(app.exec())
 

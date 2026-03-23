@@ -116,3 +116,18 @@ The `packet_id` field increments by 1 for each packet. If the receiver sees a ga
 ## Timestamp
 
 `timestamp_ms` is the ESP8266 `millis()` value at the moment the packet is built. It wraps around every ~49.7 days. Use it for relative timing between packets, not absolute wall-clock time.
+
+## Command Protocol (GUI → ESP)
+
+The GUI can send commands to the ESP on the same UDP port. Commands are 2-byte packets (distinct from the 43-byte data packets by size).
+
+| Command | Bytes | Description |
+|---------|-------|-------------|
+| Calibrate | `0xCA 0xFE` | Trigger IMU offset calibration |
+
+When the ESP receives a calibrate command:
+1. Data streaming pauses
+2. `autoOffsets()` runs for ~1-2 seconds (sensor must be stationary and level)
+3. Streaming resumes with updated offsets
+
+Calibration offsets are stored in RAM only and reset on reboot.

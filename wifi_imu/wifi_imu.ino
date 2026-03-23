@@ -29,6 +29,11 @@ const uint16_t TARGET_PORT = 4269;
 #define MPU9250_ADDR 0x69
 #define BMP280_ADDR  0x77
 
+// ── Status LEDs ─────────────────────────────────────────────────────────────
+#define LED_NET_PIN D5   // Network connected
+#define LED_ACQ_PIN D6   // Acquisition in progress
+#define LED_CAL_PIN D8   // Calibration in progress
+
 // ── Timing ──────────────────────────────────────────────────────────────────
 const uint32_t SAMPLE_INTERVAL_US = 10000;  // 10 ms → 100 Hz
 
@@ -61,6 +66,10 @@ struct IMUPacket {
 };
 #pragma pack(pop)
 
+// ── Command protocol ────────────────────────────────────────────────────────
+#define CMD_CALIBRATE_0 0xCA
+#define CMD_CALIBRATE_1 0xFE
+
 // ── Globals ─────────────────────────────────────────────────────────────────
 WiFiUDP udp;
 MPU6500_WE mpu(MPU9250_ADDR);
@@ -68,6 +77,8 @@ BMP280Calib bmpCal;
 IMUPacket pkt;
 uint32_t packetCounter = 0;
 uint32_t lastSampleTime = 0;
+bool calibrating = false;
+bool acqLedState = false;
 
 // ── BMP280 helper functions (direct register access) ────────────────────────
 
@@ -176,6 +187,14 @@ void setup() {
   Serial.begin(115200);
   Serial.println("\n[WiFi IMU] Starting...");
 
+  // ── LEDs ──
+  pinMode(LED_NET_PIN, OUTPUT);
+  pinMode(LED_ACQ_PIN, OUTPUT);
+  pinMode(LED_CAL_PIN, OUTPUT);
+  digitalWrite(LED_NET_PIN, LOW);
+  digitalWrite(LED_ACQ_PIN, LOW);
+  digitalWrite(LED_CAL_PIN, LOW);
+
   // I2C
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);  // 400 kHz fast mode
@@ -233,6 +252,7 @@ void setup() {
     Serial.print(".");
   }
   Serial.printf("\n[WiFi] Connected – IP: %s\n", WiFi.localIP().toString().c_str());
+  digitalWrite(LED_NET_PIN, HIGH);
 
   // ── UDP ──
   udp.begin(TARGET_PORT);
@@ -249,6 +269,24 @@ void setup() {
 
 // ── Loop ────────────────────────────────────────────────────────────────────
 void loop() {
+  // ── Check for incoming commands ──
+  int packetSize = udp.parsePacket();
+  if (packetSize == 2) {
+    uint8_t cmd[2];
+    udp.read(cmd, 2);
+    if (cmd[0] == CMD_CALIBRATE_0 && cmd[1] == CMD_CALIBRATE_1) {
+      calibrating = true;
+      digitalWrite(LED_ACQ_PIN, LOW);
+      digitalWrite(LED_CAL_PIN, HIGH);
+      Serial.println("[CAL] Calibrating — keep sensor still...");
+      mpu.autoOffsets();
+      Serial.println("[CAL] Done");
+      digitalWrite(LED_CAL_PIN, LOW);
+      calibrating = false;
+      lastSampleTime = micros();
+    }
+  }
+
   uint32_t now = micros();
   if (now - lastSampleTime < SAMPLE_INTERVAL_US) return;
   lastSampleTime += SAMPLE_INTERVAL_US;
@@ -280,6 +318,10 @@ void loop() {
   pkt.checksum = computeChecksum((const uint8_t*)&pkt, sizeof(pkt) - 1);
 
   // ── Send UDP ──
+  if (packetCounter % 100 == 0) {
+    acqLedState = !acqLedState;
+    digitalWrite(LED_ACQ_PIN, acqLedState);
+  }
   udp.beginPacket(targetIP, TARGET_PORT);
   udp.write((const uint8_t*)&pkt, sizeof(pkt));
   udp.endPacket();

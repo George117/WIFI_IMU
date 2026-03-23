@@ -2,7 +2,7 @@
 
 Real-time wireless IMU data acquisition system. An ESP8266 reads a GY-91 breakout board (MPU6500 + BMP280) and streams 7-DOF sensor data over UDP at 100 Hz. A Python GUI receives the packets and plots the signals live.
 
-Designed for measuring the dynamic response of a Stewart platform.
+Designed for measuring the dynamic response of a Stewart platform (racing/airplane simulator).
 
 ## Hardware
 
@@ -10,6 +10,7 @@ Designed for measuring the dynamic response of a Stewart platform.
 |-----------|-------------|
 | ESP8266 (NodeMCU / D1 Mini) | Microcontroller with WiFi |
 | GY-91 (MPU6500 + BMP280) | 6-axis IMU + barometric pressure sensor |
+| 3x LEDs | Status indicators (network, acquisition, calibration) |
 
 ### Wiring
 
@@ -20,12 +21,40 @@ Designed for measuring the dynamic response of a Stewart platform.
 | VCC | 3.3 V |
 | GND | GND |
 
+### Status LEDs
+
+| LED | ESP8266 Pin | Function |
+|-----|-------------|----------|
+| Network | D5 | ON when WiFi is connected |
+| Acquisition | D6 | Blinks while streaming data (toggles every 100 packets / 1s) |
+| Calibration | D8 | ON during sensor calibration |
+
+Connect each LED with a current-limiting resistor (220-330 ohm) between the GPIO pin and LED anode, cathode to GND.
+
+**LED state table:**
+
+| State | Network (D5) | Acquisition (D6) | Calibration (D8) |
+|-------|:---:|:---:|:---:|
+| Booting / no WiFi | OFF | OFF | OFF |
+| WiFi connected | ON | OFF | OFF |
+| Streaming data | ON | BLINK (1s on/off) | OFF |
+| Calibrating | ON | OFF | ON |
+
 ### I2C Addresses
 
 | Device  | Address | Notes |
 |---------|---------|-------|
 | MPU6500 | 0x69 | AD0 pulled high |
 | BMP280  | 0x77 | SDO pulled high |
+
+### Network Selector
+
+Pin D7 selects the WiFi network at boot via internal pull-up:
+
+| D7 State | Network |
+|----------|---------|
+| HIGH (default / floating) | Reach |
+| LOW (jumper to GND) | ScorpionIPX |
 
 ## Project Structure
 
@@ -51,20 +80,16 @@ Install via Arduino IDE Library Manager:
 
 ### Network Configuration
 
-Edit the following constants in `wifi_imu/wifi_imu.ino`:
+The network is selected at boot via the D7 GPIO pin. Two profiles are hardcoded in the sketch:
 
-```cpp
-const char* WIFI_SSID     = "<YOUR_SSID>";
-const char* WIFI_PASSWORD = "<YOUR_PASSWORD>";
-
-IPAddress staticIP(<ESP8266_IP>);        // ESP8266 fixed IP
-IPAddress gateway(<GATEWAY_IP>);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress dns(8, 8, 8, 8);
-
-IPAddress targetIP(<PC_IP>);             // PC running the GUI
-const uint16_t TARGET_PORT = 4269;
-```
+| Parameter | Reach (D7 HIGH) | ScorpionIPX (D7 LOW) |
+|-----------|-----------------|----------------------|
+| SSID | `<YOUR_SSID>` | `<YOUR_SSID>` |
+| Password | `<YOUR_PASSWORD>` | `<YOUR_PASSWORD>` |
+| ESP IP | `<ESP8266_IP>` | `<ESP8266_IP>` |
+| Gateway | `<GATEWAY_IP>` | `<GATEWAY_IP>` |
+| Target IP | `<PC_IP>` | `<PC_IP>` |
+| Port | 4269 | 4269 |
 
 ### Sensor Configuration
 
@@ -77,6 +102,17 @@ const uint16_t TARGET_PORT = 4269;
 | BMP280 | Temperature oversampling | x1 |
 | BMP280 | IIR filter | coefficient 4 |
 | BMP280 | Mode | Normal (continuous) |
+
+### Calibration
+
+The ESP supports on-demand IMU calibration triggered from the GUI. When a calibration command (`0xCA 0xFE`) is received over UDP:
+
+1. Data streaming pauses (acquisition LED turns off)
+2. Calibration LED turns on
+3. `mpu.autoOffsets()` runs (~1-2 seconds, sensor must be stationary and level)
+4. Calibration LED turns off, streaming resumes
+
+Calibration offsets are not persisted — they reset on reboot.
 
 ### Flashing
 
@@ -93,9 +129,17 @@ On successful boot:
 [WiFi IMU] Starting...
 [MPU6500] OK
 [BMP280] OK
+[NET] D7=HIGH → SSID: <YOUR_SSID>
 [WiFi] Connecting...
 [WiFi] Connected – IP: <ESP8266_IP>
 [UDP] Sending to <PC_IP>:4269 every 10000 us
+```
+
+On calibration:
+
+```
+[CAL] Calibrating — keep sensor still...
+[CAL] Done
 ```
 
 ## UDP Packet Format
@@ -112,6 +156,14 @@ On successful boot:
 | pressure | float32 | Pa |
 | temperature | float32 | deg C |
 | checksum | uint8 | XOR of bytes 0-41 |
+
+### Command Protocol
+
+The GUI can send 2-byte UDP commands to the ESP on the same port:
+
+| Command | Bytes | Description |
+|---------|-------|-------------|
+| Calibrate | `0xCA 0xFE` | Trigger IMU calibration |
 
 ## Python GUI
 
@@ -145,6 +197,7 @@ All GUI settings are stored in `gui/config.json`. The application reads this fil
 {
   "ip": "<BIND_IP>",
   "port": 4269,
+  "esp_ip": "<ESP8266_IP>",
   "time_window": 10,
   "axes": {
     "accel_x": "X",
@@ -168,11 +221,11 @@ All GUI settings are stored in `gui/config.json`. The application reads this fil
     "accel_x": "#e74c3c",
     "accel_y": "#2ecc71",
     "accel_z": "#3498db",
-    "gyro_x": "#e74c3c",
-    "gyro_y": "#2ecc71",
-    "gyro_z": "#3498db",
+    "gyro_x": "#e67e22",
+    "gyro_y": "#9b59b6",
+    "gyro_z": "#1abc9c",
     "pressure": "#f1c40f",
-    "temperature": "#1abc9c"
+    "temperature": "#e84393"
   }
 }
 ```
@@ -183,6 +236,7 @@ All GUI settings are stored in `gui/config.json`. The application reads this fil
 |-----|------|---------|-------------|
 | `ip` | string | `"0.0.0.0"` | UDP bind IP address |
 | `port` | int | `4269` | UDP listen port |
+| `esp_ip` | string | `""` | ESP8266 IP address (required for calibration command) |
 | `time_window` | float | `10` | Visible time window in seconds. Use a small value (e.g. 2) for fast signals, larger (e.g. 60) for trends |
 | `axes` | object | — | Custom display names for each axis. Maps IMU axes to physical DOFs (e.g. `"gyro_x": "Roll"`) |
 | `visible` | object | all `true` | Show/hide individual plots. Set to `false` to hide a plot and give more space to the remaining ones |
@@ -213,5 +267,10 @@ The following keys are used across `axes`, `visible`, and `colors`:
 - **Custom axis names** to map IMU axes to physical DOFs (X/Y/Z, Roll/Pitch/Yaw)
 - **Per-plot visibility** to focus display area on signals of interest
 - **Per-plot colors** for visual customization
+- **CSV recording** — saves timestamped session files to the `gui/` folder for post-processing
+- **Pause/resume** — freeze plot display while data collection continues in the background
+- **Statistics overlay** — Min/Max/Avg/RMS displayed on each plot in real time
+- **FFT view** — toggle frequency-domain plots below the time-domain plots to inspect spectral content
+- **On-demand calibration** — send calibrate command to the ESP from the GUI (button turns yellow during calibration)
 - **Dropped packet detection** via `packet_id` gap tracking
 - **Auto-reset on ESP reboot** (detects timestamp backward jump)
